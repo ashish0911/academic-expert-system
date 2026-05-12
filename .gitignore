@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+.venv/
+
+# App specific
+faiss_research_index/
+papers_pdf/
+papers_txt/

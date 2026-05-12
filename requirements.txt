@@ -1,0 +1,9 @@
+streamlit
+arxiv
+pypdf
+faiss-cpu
+langchain
+langchain-openai
+langchain-community
+python-dotenv
+requests
