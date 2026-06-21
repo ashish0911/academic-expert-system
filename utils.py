@@ -5,50 +5,47 @@ import requests
 import streamlit as st
 from io import BytesIO
 from pypdf import PdfReader
+from engine import load_paper_registry
 
 def fetch_and_process_papers(queries):
     client = arxiv.Client()
     all_data = []
+    registry = load_paper_registry() # Load processed papers tracker
     
-    progress_bar = st.progress(0, text="Initializing arXiv connection...")
+    progress_bar = st.progress(0, text="Checking cache and querying arXiv...")
     total_expected = len(queries) * 2
     count = 0
 
     for q in queries:
-        time.sleep(3) 
-        
-        search = arxiv.Search(
-            query=q.strip(), 
-            max_results=2, # Keep this low to avoid 429s
-            sort_by=arxiv.SortCriterion.Relevance
-        )
+        time.sleep(3) # Politeness delay for arXiv limits
+        search = arxiv.Search(query=q.strip(), max_results=2, sort_by=arxiv.SortCriterion.Relevance)
         
         try:
-            # We wrap the results iteration in a try/except for 429s
             results = list(client.results(search))
-            
             for result in results:
                 count += 1
-                progress_bar.progress(min(count / total_expected, 1.0), text=f"Reading: {result.title[:30]}...")
+                paper_id = result.get_short_id()
                 
-                # Download PDF
+                # --- CACHE DE-DUPLICATION CHECK ---
+                if paper_id in registry:
+                    progress_bar.progress(min(count / total_expected, 1.0), text=f"Skipping cached: {result.title[:20]}...")
+                    continue
+                
+                progress_bar.progress(min(count / total_expected, 1.0), text=f"Downloading new: {result.title[:20]}...")
+                
                 resp = requests.get(result.pdf_url)
                 reader = PdfReader(BytesIO(resp.content))
                 text = "\n".join([page.extract_text() for page in reader.pages])
                 
                 all_data.append({
                     "title": result.title,
-                    "id": result.get_short_id(),
+                    "id": paper_id,
                     "url": result.pdf_url,
                     "text": text
                 })
-        
         except arxiv.HTTPError as e:
             if "429" in str(e):
-                st.error("🚨 Rate limited by arXiv. Waiting 10 seconds before skipping...")
                 time.sleep(10)
-            else:
-                st.error(f"Error fetching from arXiv: {e}")
             continue
 
     progress_bar.empty()

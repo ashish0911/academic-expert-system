@@ -1,48 +1,62 @@
 import streamlit as st
 from dotenv import load_dotenv
-from langchain_openai import ChatOpenAI
-from models import SearchRequest
 from utils import fetch_and_process_papers, get_clickable_markdown
-from engine import setup_expert_system
+from engine import generate_research_plan, update_knowledge_base, load_existing_rag_chain, load_paper_registry
 
-load_dotenv() # Automatically looks for .env
+load_dotenv()
 
-st.set_page_config(page_title="Expert Research System", layout="wide")
-st.title("🎓 Academic Expert System")
+st.set_page_config(page_title="Strategic Expert System", layout="wide")
+st.title("🎓 Intelligent Research Expert System")
 
-topic = st.text_input("Enter a research topic:")
+# Initialize global chain in state if it exists locally on file start
+if 'rag_chain' not in st.session_state:
+    st.session_state['rag_chain'] = load_existing_rag_chain()
 
-if st.button("Build Knowledge Base"):
-    if not topic:
-        st.warning("Please enter a topic first.")
-    else:
-        # Use st.status to show a running log of background activities
-        with st.status("🚀 Initializing Expert Brain...", expanded=True) as status:
+# Sidebar inventory overview
+with st.sidebar:
+    st.header("🧠 System Memory")
+    registry = load_paper_registry()
+    st.metric("Total Papers Indexed", len(registry))
+    if registry:
+        with st.expander("Show Indexed Titles"):
+            for pid, title in registry.items():
+                st.caption(f"• ({pid}) {title}")
+
+topic = st.text_input("Enter a general research topic:")
+
+if st.button("Generate Strategy & Process"):
+    if topic:
+        with st.status("🏗️ Formulating Structured Research Plan...", expanded=True) as status:
             
-            # Step 1: Query Generation
-            st.write("🤖 LLM is brainstorming specialized search queries...")
-            query_llm = ChatOpenAI(model="gpt-4o").with_structured_output(SearchRequest)
-            query_resp = query_llm.invoke(f"Generate 3 arXiv search queries for: {topic}")
-            st.write(f"✅ Generated Queries: {', '.join(query_resp.queries)}")
+            # Step 1: Discover Important Sub-Topics
+            st.write("🔍 Mapping comprehensive subtopics via LLM...")
+            plan = generate_research_plan(topic)
             
-            # Step 2: Fetching and Processing
-            st.write("🌐 Connecting to arXiv and downloading PDFs...")
-            # We add a progress bar specifically for the papers
-            papers = fetch_and_process_papers(query_resp.queries)
-            st.write(f"📚 Successfully retrieved {len(papers)} research papers.")
+            # Display Plan Metrics dynamically
+            st.markdown(f"**Research Summary Plan:** {plan.conceptual_summary}")
+            for index, sub in enumerate(plan.subtopics):
+                st.markdown(f"👉 **Subtopic {index+1}:** {sub.name}  \n *Why it matters:* {sub.importance}")
             
-            # Step 3: RAG Setup
-            st.write("🧠 Vectorizing text and building index (this takes a moment)...")
-            st.session_state['rag_chain'] = setup_expert_system(papers)
+            # Extract queries from the plan
+            queries = [sub.target_search_query for sub in plan.subtopics]
             
-            # Finalize status
-            status.update(label="✅ Knowledge Base Complete!", state="complete", expanded=False)
-        
-        st.success(f"Expert System is now trained on {len(papers)} papers!")
+            # Step 2: Extract data safely
+            st.write("🌐 Cross-referencing queries against local cache and arXiv...")
+            new_papers = fetch_and_process_papers(queries)
+            
+            # Step 3: Incremental Update
+            st.write("📥 Updating vector engine incrementally...")
+            st.session_state['rag_chain'] = update_knowledge_base(new_papers)
+            
+            status.update(label="✅ Knowledge Base Updated Successfully!", state="complete")
 
-if 'rag_chain' in st.session_state:
-    query = st.chat_input("Ask a question about the papers...")
+# Chat Interface
+if st.session_state['rag_chain']:
+    st.divider()
+    query = st.chat_input("Ask anything about your entire dynamic repository...")
     if query:
-        with st.spinner("Thinking..."):
+        with st.spinner("Synthesizing answer..."):
             ans_obj = st.session_state['rag_chain'].invoke(query)
             st.markdown(get_clickable_markdown(ans_obj))
+else:
+    st.info("Please build or query a topic to initialize the expert agent.")
