@@ -74,7 +74,7 @@ if st.button("Generate Strategy & Process"):
         with st.status("🏗️ Executing Strategic Research Pipeline...", expanded=True) as status:
             run_knowledge_base_build(topic)
             status.update(label="✅ Knowledge Base Update Complete!", state="complete")
-        st.success("The system cache has updated successfully. Ask a question below!")
+        st.success("The system cache has updated successfully. Ask a future question below!")
 
 if st.session_state.get('rag_chain') is not None:
     st.divider()

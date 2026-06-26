@@ -9,7 +9,9 @@ from langchain_community.document_compressors.flashrank_rerank import FlashrankR
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 from langchain_classic.retrievers.contextual_compression import ContextualCompressionRetriever
-from langchain_core.runnables import RunnableLambda
+
+import tiktoken
+from langfuse import get_client
 from langchain_core.embeddings import Embeddings
 
 from models import ExpertAnswer, TopicPlan
@@ -19,31 +21,66 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "http://localhost:6333")
 COLLECTION_NAME = "research_papers"
 
 class TrackedEmbeddings(Embeddings):
-    """Wraps embedding generation to log costs while passing strict type validation."""
-    def __init__(self, base_embeddings, cb_handler=None):
+    """Wraps embedding generation to track OpenAI token costs automatically via V4 Context locals."""
+    def __init__(self, base_embeddings):
         self.base_embeddings = base_embeddings
-        self.cb_handler = cb_handler
+
+    def _log_embedding_telemetry(self, name, total_tokens):
+        """Helper to safely register token generation metrics under the active trace."""
+        try:
+            model_name = getattr(self.base_embeddings, "model", "text-embedding-ada-002")
+            lf = get_client()
+            
+            generation = lf.start_observation(
+                as_type="generation",
+                name=name,
+                model=model_name,
+                usage_details={
+                    "prompt_tokens": total_tokens,
+                    "total_tokens": total_tokens
+                }
+            )
+            generation.end()
+        except Exception:
+            pass
 
     def embed_documents(self, texts):
-        if self.cb_handler:
-            # Route chunk parsing through an isolated, traceable LangChain runnable
-            runnable = RunnableLambda(self.base_embeddings.embed_documents)
-            return runnable.invoke(texts, config={
-                "callbacks": [self.cb_handler],
-                "run_name": "OpenAI-Embedding-Generation"
-            })
-        return self.base_embeddings.embed_documents(texts)
+        embeddings = self.base_embeddings.embed_documents(texts)
+        try:
+            model_name = getattr(self.base_embeddings, "model", "text-embedding-ada-002")
+            try:
+                encoding = tiktoken.encoding_for_model(model_name)
+            except Exception:
+                encoding = tiktoken.get_encoding("cl100k_base")
+            
+            total_tokens = sum(len(encoding.encode(text)) for text in texts)
+            self._log_embedding_telemetry("OpenAI-Document-Embedding-Generation", total_tokens)
+        except Exception:
+            pass
+        return embeddings
 
     def embed_query(self, text):
-        return self.base_embeddings.embed_query(text)
+        embedding = self.base_embeddings.embed_query(text)
+        try:
+            model_name = getattr(self.base_embeddings, "model", "text-embedding-ada-002")
+            try:
+                encoding = tiktoken.encoding_for_model(model_name)
+            except Exception:
+                encoding = tiktoken.get_encoding("cl100k_base")
+            
+            total_tokens = len(encoding.encode(text))
+            self._log_embedding_telemetry("OpenAI-Query-Embedding-Generation", total_tokens)
+        except Exception:
+            pass
+        return embedding
 
 
-def get_vector_store(cb_handler=None):
-    """Initializes Qdrant safely using the clean type-validated telemetry wrapper."""
+def get_vector_store():
+    """Initializes Qdrant safely using the clean telemetry tracking wrapper."""
     client = QdrantClient(url=QDRANT_HOST)
     base_embeddings = OpenAIEmbeddings()
     
-    embeddings = TrackedEmbeddings(base_embeddings, cb_handler)
+    embeddings = TrackedEmbeddings(base_embeddings)
     
     if not client.collection_exists(collection_name=COLLECTION_NAME):
         client.create_collection(
@@ -66,7 +103,7 @@ def generate_research_plan(topic: str, cb_handler=None) -> TopicPlan:
     return chain.invoke({"topic": topic}, config=config)
 
 def update_knowledge_base(new_paper_data, cb_handler=None):
-    vector_store = get_vector_store(cb_handler=cb_handler)
+    vector_store = get_vector_store()
     if not new_paper_data:
         return build_production_rag_chain(vector_store)
         
@@ -111,7 +148,7 @@ def build_production_rag_chain(vector_store=None):
     from pathlib import Path
     
     model_name = "ms-marco-MultiBERT-L-12"
-    cache_directory = "./flashrank_models"  # Persistent directory in your workspace
+    cache_directory = "./flashrank_models"
     
     try:
         ranker_client = Ranker(model_name=model_name, cache_dir=cache_directory)
@@ -119,11 +156,9 @@ def build_production_rag_chain(vector_store=None):
         corrupted_path = Path(cache_directory) / model_name
         if corrupted_path.exists():
             shutil.rmtree(corrupted_path)
-            
         ranker_client = Ranker(model_name=model_name, cache_dir=cache_directory)
 
     compressor = FlashrankRerank(client=ranker_client, top_n=4)
-    
     rerank_retriever = ContextualCompressionRetriever(base_compressor=compressor, base_retriever=base_retriever)
     
     doc_prompt = PromptTemplate.from_template("TITLE: {source}\nURL: {url}\nID: {id}\nCONTENT: {page_content}\n---")
