@@ -61,6 +61,7 @@ OPENAI_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxx
 ### 4. Launch the App
 
 ```bash
+docker compose up -d
 streamlit run app.py
 
 ```

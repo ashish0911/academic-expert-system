@@ -11,4 +11,5 @@ env/
 faiss_research_index/
 papers_pdf/
 papers_txt/
+flashrank_models/
 processed_papers_registry.json
